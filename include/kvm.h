@@ -8,6 +8,37 @@ struct ivee_memory_map;
 struct x86_cpu_state;
 
 /**
+ * Valid ivee exit reasons we care about
+ */
+enum ivee_exit_reason {
+    /** PIO is used to trap guest call returns */
+    IVEE_EXIT_IO = 0,
+
+    /** All other exit reasons are unexpected and unhandled */
+    IVEE_EXIT_UNKNOWN,
+};
+
+/**
+ * Port IO exit data
+ */
+struct ivee_pio_exit {
+    uint32_t data;
+    uint16_t port;
+    uint8_t size;
+    uint8_t op; /* 0 = read, 1 = write */
+};
+
+/**
+ * VM exit information
+ */
+struct ivee_exit {
+    enum ivee_exit_reason exit_reason;
+    union {
+        struct ivee_pio_exit io;
+    };
+};
+
+/**
  * Opaque KVM VM container
  */
 struct ivee_kvm_vm;
@@ -47,3 +78,8 @@ int ivee_kvm_load_vcpu_state(struct ivee_kvm_vm* vm, struct x86_cpu_state* x86_c
  * Get KVM vcpu state and store it in output x86 state
  */
 int ivee_kvm_store_vcpu_state(struct ivee_kvm_vm* vm, struct x86_cpu_state* x86_cpu);
+
+/**
+ * Resume/start execution of KVM vcpu until next supported vmexit is initiated by the guest
+ */
+int ivee_kvm_run(struct ivee_kvm_vm* vm, struct ivee_exit* exit_reason);

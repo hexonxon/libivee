@@ -423,3 +423,29 @@ int ivee_kvm_store_vcpu_state(struct ivee_kvm_vm* vm, struct x86_cpu_state* x86_
 {
     return store_vcpu_state(vm, x86_cpu);
 }
+
+int ivee_kvm_run(struct ivee_kvm_vm* vm, struct ivee_exit* exit)
+{
+    int res = 0;
+
+    res = kvm_ioctl_noargs(vm->vcpu_fd, KVM_RUN);
+    if (res != 0) {
+        return res;
+    }
+
+    switch (vm->kvm_run->exit_reason) {
+    case KVM_EXIT_IO:
+        exit->exit_reason = IVEE_EXIT_IO;
+        exit->io.port = vm->kvm_run->io.port;
+        exit->io.op = vm->kvm_run->io.direction;
+        exit->io.size = vm->kvm_run->io.size;
+        exit->io.data = 0;
+        memcpy(&exit->io.data, (uint8_t*)vm->kvm_run + vm->kvm_run->io.data_offset, vm->kvm_run->io.size);
+
+        return 0;
+
+    default:
+        exit->exit_reason = IVEE_EXIT_UNKNOWN;
+        return 0;
+    };
+}
