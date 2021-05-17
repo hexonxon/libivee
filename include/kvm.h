@@ -4,6 +4,8 @@
 
 #pragma once
 
+struct ivee_memory_map;
+
 /**
  * Opaque KVM VM container
  */

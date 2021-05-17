@@ -1,5 +1,7 @@
 #include <inttypes.h>
 #include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -9,9 +11,36 @@
 
 #include "libivee/libivee.h"
 #include "platform.h"
+#include "memory.h"
+#include "x86.h"
 #include "kvm.h"
 
 #define MIN_KVM_VERSION 12
+#define MAX_KVM_MEMORY_SLOTS 16
+
+/**
+ * KVM memory slot tracking
+ */
+struct ivee_kvm_memory_slot
+{
+    /* KVM slot index */
+    int index;
+
+    /* Is slot in use? */
+    bool is_used;
+
+    /* Is slot readonly? */
+    bool is_ro;
+
+    /* GPA start */
+    gpa_t first_gpa;
+
+    /* GPA end */
+    gpa_t last_gpa;
+
+    /* Mapped host virtual address */
+    uintptr_t hva;
+};
 
 /**
  * KVM VM context
@@ -29,6 +58,9 @@ struct ivee_kvm_vm
 
     /* Mapped KVM vcpu data */
     struct kvm_run* kvm_run;
+
+    /* Memory slot array */
+    struct ivee_kvm_memory_slot memory_slots[MAX_KVM_MEMORY_SLOTS];
 };
 
 static struct ivee_kvm_info {
@@ -90,6 +122,10 @@ int ivee_init_kvm(void)
         return res;
     }
 
+    if (res < MAX_KVM_MEMORY_SLOTS) {
+        return -ENOSPC;
+    }
+
     return 0;
 }
 
@@ -123,6 +159,11 @@ struct ivee_kvm_vm* ivee_create_kvm_vm(void)
         goto error_out;
     }
 
+    for (size_t i = 0; i < MAX_KVM_MEMORY_SLOTS; ++i) {
+        struct ivee_kvm_memory_slot* slot = vm->memory_slots + i;
+        slot->index = i;
+    }
+
     return vm;
 
 error_out:
@@ -151,4 +192,77 @@ void ivee_release_kvm_vm(struct ivee_kvm_vm* vm)
     }
 
     ivee_free(vm);
+}
+
+static int set_memory_slot(struct ivee_kvm_vm* vm, struct ivee_kvm_memory_slot* slot)
+{
+    struct kvm_userspace_memory_region memregion;
+    memregion.slot = slot->index;
+    memregion.flags = slot->is_ro ? KVM_MEM_READONLY : 0;
+    memregion.guest_phys_addr = slot->first_gpa;
+    memregion.memory_size = slot->last_gpa - slot->first_gpa + 1;
+    memregion.userspace_addr = slot->hva;
+
+    return kvm_ioctl(vm->fd, KVM_SET_USER_MEMORY_REGION, (uintptr_t)&memregion);
+}
+
+static int delete_memory_slot(struct ivee_kvm_vm* vm, struct ivee_kvm_memory_slot* slot)
+{
+    struct kvm_userspace_memory_region memregion;
+    memregion.slot = slot->index;
+    memregion.memory_size = 0;
+
+    return kvm_ioctl(vm->fd, KVM_SET_USER_MEMORY_REGION, (uintptr_t)&memregion);
+}
+
+int ivee_set_kvm_memory_map(struct ivee_kvm_vm* vm, const struct ivee_memory_map* memmap)
+{
+    if (!vm || !memmap) {
+        return -EINVAL;
+    }
+
+    /*
+     * Blindly resetting slot contents is expensive in KVM, however we don't expect memory map to change
+     * often (or at all) for our cases, so we will just reconstruct slots entirely from each new memory map.
+     *
+     * If frequency of memmap updates ever changes this could become a problem.
+     */
+
+    for (size_t i = 0; i < MAX_KVM_MEMORY_SLOTS; ++i) {
+        struct ivee_kvm_memory_slot* slot = vm->memory_slots + i;
+        if (!slot->is_used) {
+            continue;
+        }
+
+        int res = delete_memory_slot(vm, slot);
+        if (res != 0) {
+            return res;
+        }
+
+        slot->is_used = false;
+    }
+
+    size_t index = 0;
+    struct ivee_guest_memory_region* r;
+    LIST_FOREACH(r, &memmap->regions, link) {
+        if (index == MAX_KVM_MEMORY_SLOTS) {
+            return -ENOSPC;
+        }
+
+        struct ivee_kvm_memory_slot* slot = vm->memory_slots + index;
+        slot->first_gpa = r->first_gfn << 12;
+        slot->last_gpa = ((r->last_gfn + 1) << 12) - 1;
+        slot->is_ro = r->ro;
+        slot->hva = (uintptr_t)(r->host ? r->host->hva : NULL);
+
+        int res = set_memory_slot(vm, slot);
+        if (res != 0) {
+            return res;
+        }
+
+        slot->is_used = true;
+        ++index;
+    }
+
+    return 0;
 }
