@@ -266,3 +266,160 @@ int ivee_set_kvm_memory_map(struct ivee_kvm_vm* vm, const struct ivee_memory_map
 
     return 0;
 }
+
+static void load_segment(struct kvm_segment* kvmseg, const struct x86_segment* seg)
+{
+    kvmseg->base = seg->base;
+    kvmseg->limit = seg->limit;
+    kvmseg->selector = seg->selector;
+    kvmseg->type = seg->type;
+    kvmseg->dpl = seg->dpl;
+    kvmseg->present = !!(seg->flags & X86_SEG_P);
+    kvmseg->db = !!(seg->flags & X86_SEG_DB);
+    kvmseg->s = !!(seg->flags & X86_SEG_S);
+    kvmseg->l = !!(seg->flags & X86_SEG_L);
+    kvmseg->g = !!(seg->flags & X86_SEG_G);
+    kvmseg->avl = !!(seg->flags & X86_SEG_AVL);
+    kvmseg->unusable = !kvmseg->present;
+}
+
+static void store_segment(const struct kvm_segment* kvmseg, struct x86_segment* seg)
+{
+    seg->base = kvmseg->base;
+    seg->limit = kvmseg->limit;
+    seg->selector = kvmseg->selector;
+    seg->type = kvmseg->type;
+    seg->dpl = kvmseg->dpl;
+    seg->flags |= (kvmseg->present ? X86_SEG_P : 0);
+    seg->flags |= (kvmseg->db ? X86_SEG_DB : 0);
+    seg->flags |= (kvmseg->s ? X86_SEG_S : 0);
+    seg->flags |= (kvmseg->l ? X86_SEG_L : 0);
+    seg->flags |= (kvmseg->g ? X86_SEG_G : 0);
+    seg->flags |= (kvmseg->avl ? X86_SEG_AVL : 0);
+}
+
+static void load_dtable(struct kvm_dtable* kvm_dtable, const struct x86_dtbl* dtable)
+{
+    kvm_dtable->base = dtable->base;
+    kvm_dtable->limit = dtable->limit;
+    memset(kvm_dtable->padding, 0, sizeof(kvm_dtable->padding));
+}
+
+/* Load effective cpu state into KVM vcpu */
+static int load_vcpu_state(struct ivee_kvm_vm* vm, const struct x86_cpu_state* x86_cpu)
+{
+    int res = 0;
+
+    struct kvm_regs kvm_regs;
+    kvm_regs.rax = x86_cpu->rax;
+    kvm_regs.rbx = x86_cpu->rbx;
+    kvm_regs.rcx = x86_cpu->rcx;
+    kvm_regs.rdx = x86_cpu->rdx;
+    kvm_regs.rsi = x86_cpu->rsi;
+    kvm_regs.rdi = x86_cpu->rdi;
+    kvm_regs.rsp = x86_cpu->rsp;
+    kvm_regs.rbp = x86_cpu->rbp;
+    kvm_regs.r8 = x86_cpu->r8;
+    kvm_regs.r9 = x86_cpu->r9;
+    kvm_regs.r10 = x86_cpu->r10;
+    kvm_regs.r11 = x86_cpu->r11;
+    kvm_regs.r12 = x86_cpu->r12;
+    kvm_regs.r13 = x86_cpu->r13;
+    kvm_regs.r14 = x86_cpu->r14;
+    kvm_regs.r15 = x86_cpu->r15;
+    kvm_regs.rip = x86_cpu->rip;
+    kvm_regs.rflags = x86_cpu->rflags;
+
+    res = kvm_ioctl(vm->vcpu_fd, KVM_SET_REGS, (uintptr_t)&kvm_regs);
+    if (res != 0) {
+        return res;
+    }
+
+    struct kvm_sregs kvm_sregs = {0};
+    load_segment(&kvm_sregs.cs, &x86_cpu->cs);
+    load_segment(&kvm_sregs.ds, &x86_cpu->ds);
+    load_segment(&kvm_sregs.es, &x86_cpu->es);
+    load_segment(&kvm_sregs.fs, &x86_cpu->fs);
+    load_segment(&kvm_sregs.gs, &x86_cpu->gs);
+    load_segment(&kvm_sregs.ss, &x86_cpu->ss);
+    load_segment(&kvm_sregs.tr, &x86_cpu->tr);
+    load_segment(&kvm_sregs.ldt, &x86_cpu->ldt);
+    load_dtable(&kvm_sregs.gdt, &x86_cpu->gdt);
+    load_dtable(&kvm_sregs.idt, &x86_cpu->idt);
+    kvm_sregs.cr0 = x86_cpu->cr0;
+    kvm_sregs.cr2 = x86_cpu->cr2;
+    kvm_sregs.cr3 = x86_cpu->cr3;
+    kvm_sregs.cr4 = x86_cpu->cr4;
+    kvm_sregs.efer = x86_cpu->efer;
+    kvm_sregs.apic_base = x86_cpu->apic_base;
+
+    res = kvm_ioctl(vm->vcpu_fd, KVM_SET_SREGS, (uintptr_t)&kvm_sregs);
+    if (res != 0) {
+        return res;
+    }
+
+    return 0;
+}
+
+/* Store effective cpu state from KVM vcpu */
+__attribute__((unused)) static int store_vcpu_state(struct ivee_kvm_vm* vm, struct x86_cpu_state* x86_cpu)
+{
+    int res = 0;
+
+    struct kvm_regs kvm_regs;
+    res = kvm_ioctl(vm->vcpu_fd, KVM_GET_REGS, (uintptr_t)&kvm_regs);
+    if (res != 0) {
+        return res;
+    }
+
+    x86_cpu->rax = kvm_regs.rax;
+    x86_cpu->rbx = kvm_regs.rbx;
+    x86_cpu->rcx = kvm_regs.rcx;
+    x86_cpu->rdx = kvm_regs.rdx;
+    x86_cpu->rsi = kvm_regs.rsi;
+    x86_cpu->rdi = kvm_regs.rdi;
+    x86_cpu->rsp = kvm_regs.rsp;
+    x86_cpu->rbp = kvm_regs.rbp;
+    x86_cpu->r8 = kvm_regs.r8;
+    x86_cpu->r9 = kvm_regs.r9;
+    x86_cpu->r10 = kvm_regs.r10;
+    x86_cpu->r11 = kvm_regs.r11;
+    x86_cpu->r12 = kvm_regs.r12;
+    x86_cpu->r13 = kvm_regs.r13;
+    x86_cpu->r14 = kvm_regs.r14;
+    x86_cpu->r15 = kvm_regs.r15;
+    x86_cpu->rip = kvm_regs.rip;
+    x86_cpu->rflags = kvm_regs.rflags;
+
+    struct kvm_sregs kvm_sregs = {0};
+    res = kvm_ioctl(vm->vcpu_fd, KVM_GET_SREGS, (uintptr_t)&kvm_sregs);
+    if (res != 0) {
+        return res;
+    }
+
+    store_segment(&kvm_sregs.cs, &x86_cpu->cs);
+    store_segment(&kvm_sregs.ds, &x86_cpu->ds);
+    store_segment(&kvm_sregs.es, &x86_cpu->es);
+    store_segment(&kvm_sregs.fs, &x86_cpu->fs);
+    store_segment(&kvm_sregs.gs, &x86_cpu->gs);
+    store_segment(&kvm_sregs.ss, &x86_cpu->ss);
+    store_segment(&kvm_sregs.tr, &x86_cpu->tr);
+    store_segment(&kvm_sregs.ldt, &x86_cpu->ldt);
+    x86_cpu->cr0 = kvm_sregs.cr0;
+    x86_cpu->cr2 = kvm_sregs.cr2;
+    x86_cpu->cr3 = kvm_sregs.cr3;
+    x86_cpu->cr4 = kvm_sregs.cr4;
+    x86_cpu->efer = kvm_sregs.efer;
+
+    return 0;
+}
+
+int ivee_kvm_load_vcpu_state(struct ivee_kvm_vm* vm, struct x86_cpu_state* x86_cpu)
+{
+    return load_vcpu_state(vm, x86_cpu);
+}
+
+int ivee_kvm_store_vcpu_state(struct ivee_kvm_vm* vm, struct x86_cpu_state* x86_cpu)
+{
+    return store_vcpu_state(vm, x86_cpu);
+}

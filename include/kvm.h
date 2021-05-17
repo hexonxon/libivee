@@ -5,6 +5,7 @@
 #pragma once
 
 struct ivee_memory_map;
+struct x86_cpu_state;
 
 /**
  * Opaque KVM VM container
@@ -36,3 +37,13 @@ void ivee_release_kvm_vm(struct ivee_kvm_vm* vm);
  *          Guaranteed to not have overlaps and to have all adjacent regions merged.
  */
 int ivee_set_kvm_memory_map(struct ivee_kvm_vm* vm, const struct ivee_memory_map* memmap);
+
+/**
+ * Load x86 cpu state into KVM vcpu
+ */
+int ivee_kvm_load_vcpu_state(struct ivee_kvm_vm* vm, struct x86_cpu_state* x86_cpu);
+
+/**
+ * Get KVM vcpu state and store it in output x86 state
+ */
+int ivee_kvm_store_vcpu_state(struct ivee_kvm_vm* vm, struct x86_cpu_state* x86_cpu);
