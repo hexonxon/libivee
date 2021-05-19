@@ -26,6 +26,9 @@ struct ivee {
 
     /* Mapped executable image memory region */
     struct ivee_host_memory_region image_mr;
+
+    /* Flag set to true if guest requested termination */
+    bool should_terminate;
 };
 
 uint64_t ivee_list_platform_capabilities(void)
@@ -221,4 +224,158 @@ int ivee_load_executable(struct ivee* ivee, const char* file, ivee_executable_fo
     }
 
     return res;
+}
+
+static void reset_x86_segment(struct x86_segment* seg,
+                              uint16_t selector,
+                              uint32_t limit,
+                              uint8_t type,
+                              uint8_t flags)
+{
+    seg->base = 0;
+    seg->limit = limit;
+    seg->selector = selector;
+    seg->type = type;
+    seg->dpl = 0;
+    seg->flags = flags;
+}
+
+/*
+ * Set initial state for x86 boot processor.
+ * We are putting the cpu directly in x86_64 long mode.
+ */
+static void init_x86_cpu(struct x86_cpu_state* x86_cpu)
+{
+    /*
+     * IDT and GDT limits are also set to 0 here,
+     * which means if exception occurs inside a guest, it will end in a triple fault.
+     *
+     * For now this is fine (insert meme here).
+     * Guest runtime can opt to set it's own exception handlers later on
+     */
+    memset(x86_cpu, 0, sizeof(*x86_cpu));
+
+    x86_cpu->rflags = 0x2; /* Bit 1 is always set */
+
+    /*
+     * Although segmentation is deprecated in 64-bit mode,
+     * vmentry checks still require us to setup flat 64-bit segment model.
+     */
+    reset_x86_segment(&x86_cpu->cs, 0x8, 0xFFFFFFFF, X86_SEG_TYPE_CODE | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_L);
+    reset_x86_segment(&x86_cpu->ds, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
+    reset_x86_segment(&x86_cpu->ss, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
+    reset_x86_segment(&x86_cpu->es, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
+    reset_x86_segment(&x86_cpu->fs, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
+    reset_x86_segment(&x86_cpu->gs, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
+    reset_x86_segment(&x86_cpu->tr, 0, 0, X86_SEG_TYPE_TSS32,
+            X86_SEG_P);
+    reset_x86_segment(&x86_cpu->ldt, 0, 0, X86_SEG_TYPE_LDT,
+            X86_SEG_P);
+
+    /*
+     * Setup the rest of 64-bit control register context
+     */
+    x86_cpu->cr0 = 0x80010001;  /* PG | PE | WP */
+    x86_cpu->cr4 = 0x20;        /* PAE */
+    x86_cpu->efer = 0x500;      /* LMA | LME */
+    x86_cpu->cr3 = IVEE_PML4_BASE_GPA;
+}
+
+static int load_vcpu_state(struct ivee* ivee, struct ivee_arch_state* state)
+{
+    struct x86_cpu_state* x86_cpu = &ivee->x86_cpu;
+    init_x86_cpu(x86_cpu);
+    x86_cpu->rax = state->rax;
+    x86_cpu->rbx = state->rbx;
+    x86_cpu->rcx = state->rcx;
+    x86_cpu->rdx = state->rdx;
+    x86_cpu->rsi = state->rsi;
+    x86_cpu->rdi = state->rdi;
+    x86_cpu->rbp = state->rbp;
+    x86_cpu->r8 = state->r8;
+    x86_cpu->r9 = state->r9;
+    x86_cpu->r10 = state->r10;
+    x86_cpu->r11 = state->r11;
+    x86_cpu->r12 = state->r12;
+    x86_cpu->r13 = state->r13;
+    x86_cpu->r14 = state->r14;
+    x86_cpu->r15 = state->r15;
+
+    return ivee_kvm_load_vcpu_state(ivee->vm, x86_cpu);
+}
+
+static int store_vcpu_state(struct ivee* ivee, struct ivee_arch_state* state)
+{
+    struct x86_cpu_state* x86_cpu = &ivee->x86_cpu;
+    int res = ivee_kvm_store_vcpu_state(ivee->vm, x86_cpu);
+    if (res != 0) {
+        return res;
+    }
+
+    state->rax = x86_cpu->rax;
+    state->rbx = x86_cpu->rbx;
+    state->rcx = x86_cpu->rcx;
+    state->rdx = x86_cpu->rdx;
+    state->rsi = x86_cpu->rsi;
+    state->rdi = x86_cpu->rdi;
+    state->r8 = x86_cpu->r8;
+    state->r9 = x86_cpu->r9;
+    state->r10 = x86_cpu->r10;
+    state->r11 = x86_cpu->r11;
+    state->r12 = x86_cpu->r12;
+    state->r13 = x86_cpu->r13;
+    state->r14 = x86_cpu->r14;
+    state->r15 = x86_cpu->r15;
+
+    return 0;
+}
+
+static int handle_pio(struct ivee* ivee, struct ivee_pio_exit* pio)
+{
+    return -ENOTSUP;
+}
+
+int ivee_call(struct ivee* ivee, struct ivee_arch_state* state)
+{
+    int res = 0;
+
+    if (!ivee || !state) {
+        return -EINVAL;
+    }
+
+    res = load_vcpu_state(ivee, state);
+    if (res != 0) {
+        return res;
+    }
+
+    ivee->should_terminate = false;
+
+    do {
+        struct ivee_exit exit;
+        res = ivee_kvm_run(ivee->vm, &exit);
+        if (res != 0) {
+            return res;
+        }
+
+        switch (exit.exit_reason) {
+        case IVEE_EXIT_IO:
+            res = handle_pio(ivee, &exit.io);
+            break;
+        default:
+            res = -ENOTSUP;
+            break;
+        }
+
+        if (res != 0) {
+            return res;
+        }
+    } while (!ivee->should_terminate);
+
+    return store_vcpu_state(ivee, state);
 }
