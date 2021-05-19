@@ -338,7 +338,14 @@ static int store_vcpu_state(struct ivee* ivee, struct ivee_arch_state* state)
 
 static int handle_pio(struct ivee* ivee, struct ivee_pio_exit* pio)
 {
-    return -ENOTSUP;
+    switch (pio->port) {
+    case IVEE_PIO_EXIT_PORT:
+        /* Don't care about value */
+        ivee->should_terminate = true;
+        return 0;
+    default:
+        return -ENOTSUP;
+    }
 }
 
 int ivee_call(struct ivee* ivee, struct ivee_arch_state* state)

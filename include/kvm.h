@@ -7,6 +7,9 @@
 struct ivee_memory_map;
 struct x86_cpu_state;
 
+/* TODO: this will eventually have to move to runtime interface header */
+#define IVEE_PIO_EXIT_PORT 0x78u
+
 /**
  * Valid ivee exit reasons we care about
  */
