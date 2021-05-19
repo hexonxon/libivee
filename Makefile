@@ -37,6 +37,10 @@ $(TARGET_SO): $(BINDIR) $(HDRS) $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) -o $@
 
 clean:
+	$(MAKE) -C tests clean
 	rm -rf $(BINDIR)
 
-.PHONY: all clean
+tests:
+	$(MAKE) -C tests
+
+.PHONY: all clean tests
