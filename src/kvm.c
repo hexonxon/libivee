@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <signal.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <linux/kvm.h>
@@ -129,6 +130,34 @@ int ivee_init_kvm(void)
     return 0;
 }
 
+/* Set default signal mask for KVM_RUN:
+ * everything is blocked besides SIGUSR1 */
+static int set_default_signal_mask(struct ivee_kvm_vm* vm)
+{
+    int res = 0;
+    sigset_t sigset;
+
+    res = sigfillset(&sigset);
+    if (res != 0) {
+       return res;
+    }
+
+    res = sigdelset(&sigset, SIGUSR1);
+    if (res != 0) {
+       return res;
+    }
+
+    union {
+        struct kvm_signal_mask sigmask;
+        uint8_t _buf[sizeof(struct kvm_signal_mask) + sizeof(sigset)];
+    } data;
+
+    memcpy(data.sigmask.sigset, &sigset, sizeof(sigset));
+    data.sigmask.len = sizeof(unsigned long);
+
+    return kvm_ioctl(vm->vcpu_fd, KVM_SET_SIGNAL_MASK, (uintptr_t)&data.sigmask);
+}
+
 struct ivee_kvm_vm* ivee_create_kvm_vm(void)
 {
     struct ivee_kvm_vm* vm = ivee_zalloc(sizeof(*vm));
@@ -156,6 +185,10 @@ struct ivee_kvm_vm* ivee_create_kvm_vm(void)
 
     vm->kvm_run = mmap(NULL, vm->vcpu_mapping_size, PROT_READ|PROT_WRITE, MAP_SHARED, vm->vcpu_fd, 0);
     if (vm->kvm_run == MAP_FAILED) {
+        goto error_out;
+    }
+
+    if (set_default_signal_mask(vm) != 0) {
         goto error_out;
     }
 
