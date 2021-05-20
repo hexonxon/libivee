@@ -276,6 +276,18 @@ error_out:
     return res;
 }
 
+int load_any(struct ivee* ivee, const char* file)
+{
+    int res = 0;
+
+    res = load_elf64(ivee, file);
+    if (res == 0) {
+        return res;
+    }
+
+    return load_bin(ivee, file);
+}
+
 int ivee_load_executable(struct ivee* ivee, const char* file, ivee_executable_format_t format)
 {
     int res = 0;
@@ -299,6 +311,9 @@ int ivee_load_executable(struct ivee* ivee, const char* file, ivee_executable_fo
         break;
     case IVEE_EXEC_ELF64:
         res = load_elf64(ivee, file);
+        break;
+    case IVEE_EXEC_ANY:
+        res = load_any(ivee, file);
         break;
     default:
         res = -ENOTSUP;
