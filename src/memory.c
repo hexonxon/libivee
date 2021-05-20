@@ -27,8 +27,11 @@ struct ivee_guest_memory_region* ivee_map_host_memory(struct ivee_memory_map* ma
         return NULL;
     }
 
-    gpa_t first_gfn = gpa >> 12;
-    gpa_t last_gfn = (gpa + (length - 1)) >> 12;
+    /* Fixup length to be page-aligned */
+    length = (length + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
+
+    gpa_t first_gfn = gpa >> PAGE_SHIFT;
+    gpa_t last_gfn = (gpa + (length - 1)) >> PAGE_SHIFT;
 
     /* Walk current regions and check for overlaps */
     struct ivee_guest_memory_region* mr;
@@ -58,6 +61,7 @@ struct ivee_guest_memory_region* ivee_map_host_memory(struct ivee_memory_map* ma
     mr->last_gfn = last_gfn;
     mr->prot = prot;
     mr->hva = ptr;
+    mr->length = length;
 
     LIST_INSERT_HEAD(&map->regions, mr, link);
     return mr;

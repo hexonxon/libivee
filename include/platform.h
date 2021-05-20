@@ -4,6 +4,9 @@
 
 #pragma once
 
+#define PAGE_SHIFT  12
+#define PAGE_SIZE   (1ul << PAGE_SHIFT)
+
 static inline void* ivee_alloc(size_t size)
 {
     return malloc(size);

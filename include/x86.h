@@ -1,7 +1,5 @@
 #pragma once
 
-#define PAGE_SIZE 0x1000
-
 /**
  * x86 segment descriptor
  * This definition is not exactly how actual descriptor is laid out.
