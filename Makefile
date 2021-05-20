@@ -34,7 +34,7 @@ $(BINDIR)/%.o:$(SRCDIR)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TARGET_SO): $(BINDIR) $(HDRS) $(OBJS)
-	$(CC) $(LDFLAGS) $(OBJS) -o $@
+	$(CC) $(LDFLAGS) $(OBJS) -lelf -o $@
 
 clean:
 	$(MAKE) -C tests clean

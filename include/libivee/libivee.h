@@ -39,6 +39,11 @@ typedef enum ivee_executable_format {
     IVEE_EXEC_BIN = 0,
 
     /**
+     * ELF64 executable image
+     */
+    IVEE_EXEC_ELF64,
+
+    /**
      * Let the implementation guess the format
      */
     IVEE_EXEC_ANY

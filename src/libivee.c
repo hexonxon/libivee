@@ -5,6 +5,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <gelf.h>
+
 #include "libivee/libivee.h"
 #include "platform.h"
 #include "memory.h"
@@ -175,6 +177,105 @@ static int load_bin(struct ivee* ivee, const char* file)
     return 0;
 }
 
+int load_elf64(struct ivee* ivee, const char* file)
+{
+    int res = 0;
+
+    if (elf_version(EV_CURRENT) == EV_NONE) {
+        return -ENOTSUP;
+    }
+
+    int fd = open(file, O_RDONLY);
+    if (fd < 0) {
+        return fd;
+    }
+
+    Elf* elf = elf_begin(fd, ELF_C_READ, NULL);
+    if (!elf) {
+        res = -elf_errno();
+        goto error_out;
+    }
+
+    if (elf_kind(elf) != ELF_K_ELF) {
+        res = -elf_errno();
+        goto error_out;
+    }
+
+    /*
+     * Accepted ELF type: ELF64 executable or dso
+     */
+
+    GElf_Ehdr ehdr;
+    if (!gelf_getehdr(elf, &ehdr)) {
+        res = -elf_errno();
+        goto error_out;
+    }
+
+    if (gelf_getclass(elf) != ELFCLASS64) {
+        res = -ENOTSUP;
+        goto error_out;
+    }
+
+    if (ehdr.e_type != ET_EXEC && ehdr.e_type != ET_DYN) {
+        res = -ENOTSUP;
+        goto error_out;
+    }
+
+    if (ehdr.e_machine != EM_X86_64) {
+        res = -ENOTSUP;
+        goto error_out;
+    }
+
+    /*
+     * For each segment in program header table:
+     * - Create a memory region to be mapped into guest with proper permissions
+     * - Load segment into memory region
+     * - Map region into guest address space at the base address specified in segment entry
+     */
+
+    for (size_t i = 0; i < ehdr.e_phnum; ++i ) {
+        GElf_Phdr phdr;
+
+        if (gelf_getphdr(elf, i, &phdr) != &phdr) {
+            res = -elf_errno();
+            goto error_out;
+        }
+
+        if (phdr.p_type != PT_LOAD) {
+            continue;
+        }
+
+        struct ivee_guest_memory_region* segment_mr = ivee_map_host_memory(&ivee->memory_map,
+                                                                           phdr.p_vaddr,
+                                                                           phdr.p_memsz,
+                                                                           -1,
+                                                                           false,
+                                                                           (phdr.p_flags & PF_X ? IVEE_EXEC : 0) |
+                                                                           (phdr.p_flags & PF_R ? IVEE_READ : 0) |
+                                                                           (phdr.p_flags & PF_W ? IVEE_WRITE : 0));
+        if (!segment_mr) {
+            goto error_out;
+        }
+
+        ssize_t nbytes = pread(fd, segment_mr->hva, phdr.p_filesz, phdr.p_offset);
+        if (nbytes != phdr.p_filesz) {
+            res = -errno;
+            goto error_out;
+        }
+    }
+
+    elf_end(elf);
+    close(fd);
+
+    return 0;
+
+error_out:
+    elf_end(elf);
+    close(fd);
+
+    return res;
+}
+
 int ivee_load_executable(struct ivee* ivee, const char* file, ivee_executable_format_t format)
 {
     int res = 0;
@@ -195,6 +296,9 @@ int ivee_load_executable(struct ivee* ivee, const char* file, ivee_executable_fo
     switch (format) {
     case IVEE_EXEC_BIN:
         res = load_bin(ivee, file);
+        break;
+    case IVEE_EXEC_ELF64:
+        res = load_elf64(ivee, file);
         break;
     default:
         res = -ENOTSUP;
