@@ -387,20 +387,25 @@ int ivee_load_executable(struct ivee* ivee, const char* file, ivee_executable_fo
     };
 
     if (res != 0) {
-        return res;
+        goto error_out;
     }
 
     res = init_guest_page_table(ivee);
     if (res != 0) {
-        return res;
+        goto error_out;
     }
 
     res = ivee_set_kvm_memory_map(ivee->vm, &ivee->memory_map);
     if (res != 0) {
-        return res;
+        goto error_out;
     }
 
     init_x86_cpu(&ivee->x86_cpu);
+    return 0;
+
+error_out:
+    /* On failure drop memory map we've accumulated */
+    ivee_free_memory_map(&ivee->memory_map);
     return res;
 }
 
