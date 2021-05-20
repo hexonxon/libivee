@@ -12,7 +12,8 @@
 /*
  * Basic smoke test: create a vm, deploy a custom flat binary and call it
  */
-static void raw_binary_smoke_test(void)
+
+static void smoke_test(const char* binary, ivee_executable_format_t format)
 {
     int res = 0;
     ivee_t* ivee = NULL;
@@ -20,7 +21,7 @@ static void raw_binary_smoke_test(void)
     res = ivee_create(0, &ivee);
     CU_ASSERT_TRUE(res == 0);
 
-    res = ivee_load_executable(ivee, "smoke_test_payload.bin", IVEE_EXEC_BIN);
+    res = ivee_load_executable(ivee, binary, format);
     CU_ASSERT_TRUE(res == 0);
 
     ivee_arch_state_t state = {
@@ -36,6 +37,16 @@ static void raw_binary_smoke_test(void)
     ivee_destroy(ivee);
 }
 
+static void raw_binary_smoke_test(void)
+{
+    smoke_test("smoke_test_payload.bin", IVEE_EXEC_BIN);
+}
+
+static void elf64_smoke_test(void)
+{
+    smoke_test("smoke_test_payload.elf64", IVEE_EXEC_ELF64);
+}
+
 int main(int argc, char** argv)
 {
     if (CUE_SUCCESS != CU_initialize_registry()) {
@@ -49,6 +60,7 @@ int main(int argc, char** argv)
     }
 
     CU_add_test(suite, "raw_binary_smoke_test", raw_binary_smoke_test);
+    CU_add_test(suite, "elf64_smoke_test", elf64_smoke_test);
 
     /* run tests */
     CU_basic_set_mode(CU_BRM_VERBOSE);
