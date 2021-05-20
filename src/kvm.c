@@ -285,8 +285,8 @@ int ivee_set_kvm_memory_map(struct ivee_kvm_vm* vm, const struct ivee_memory_map
         struct ivee_kvm_memory_slot* slot = vm->memory_slots + index;
         slot->first_gpa = r->first_gfn << 12;
         slot->last_gpa = ((r->last_gfn + 1) << 12) - 1;
-        slot->is_ro = r->ro;
-        slot->hva = (uintptr_t)(r->host ? r->host->hva : NULL);
+        slot->is_ro = (r->prot & IVEE_WRITE) == 0; /* KVM does not have a non-executable flag */
+        slot->hva = (uintptr_t)r->hva;
 
         int res = set_memory_slot(vm, slot);
         if (res != 0) {

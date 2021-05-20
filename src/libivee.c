@@ -21,12 +21,6 @@ struct ivee {
     /* x86 boot processor state */
     struct x86_cpu_state x86_cpu;
 
-    /* Guest page tables memory region */
-    struct ivee_host_memory_region gpt_mr;
-
-    /* Mapped executable image memory region */
-    struct ivee_host_memory_region image_mr;
-
     /* Flag set to true if guest requested termination */
     bool should_terminate;
 };
@@ -108,12 +102,17 @@ static int init_guest_page_table(struct ivee* ivee)
 {
     int res = 0;
 
-    res = ivee_map_host_memory(IVEE_PAGE_TABLE_SIZE, false, -1, &ivee->gpt_mr);
-    if (res != 0) {
-        return res;
+    struct ivee_guest_memory_region* gpt_mr = ivee_map_host_memory(&ivee->memory_map,
+                                                                   IVEE_PML4_BASE_GPA,
+                                                                   IVEE_PAGE_TABLE_SIZE,
+                                                                   -1,
+                                                                   false,
+                                                                   IVEE_READ | IVEE_WRITE);
+    if (!gpt_mr) {
+        return -ENOMEM;
     }
 
-    uint64_t* pentry = (uint64_t*) ivee->gpt_mr.hva;
+    uint64_t* pentry = (uint64_t*) gpt_mr->hva;
 
     /* 1 entry in PML4 */
     *pentry = IVEE_PDPE_BASE_GPA | 0x3;
@@ -133,8 +132,6 @@ static int init_guest_page_table(struct ivee* ivee)
         *pentry = (PAGE_SIZE * i) | 0x3;
     }
 
-    res = ivee_map_guest_region(&ivee->memory_map, &ivee->gpt_mr, IVEE_PML4_BASE_GPA, true);
-    ivee_drop_host_memory(&ivee->gpt_mr);
     return res;
 }
 
@@ -164,24 +161,18 @@ static int load_bin(struct ivee* ivee, const char* file)
         return fd;
     }
 
-    res = ivee_map_host_memory(size, true, fd, &ivee->image_mr);
+    struct ivee_guest_memory_region* image_mr = ivee_map_host_memory(&ivee->memory_map,
+                                                                     0,
+                                                                     size,
+                                                                     fd,
+                                                                     true,
+                                                                     IVEE_READ);
     close(fd);
-
-    if (res != 0) {
-        goto error_out;
+    if (!image_mr) {
+        return -ENOMEM;
     }
 
-    res = ivee_map_guest_region(&ivee->memory_map, &ivee->image_mr, 0, true);
-    if (res != 0) {
-        goto error_out;
-    }
-
-    ivee_drop_host_memory(&ivee->image_mr);
     return 0;
-
-error_out:
-    ivee_drop_host_memory(&ivee->image_mr);
-    return res;
 }
 
 int ivee_load_executable(struct ivee* ivee, const char* file, ivee_executable_format_t format)

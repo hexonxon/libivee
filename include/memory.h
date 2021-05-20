@@ -10,19 +10,13 @@ typedef uint64_t gpa_t;
 #define IVEE_GPA_LAST UINT64_MAX
 
 /**
- * Host memory region.
- * Can be mapped to specific GPA ranges.
+ * Your typical RWX memory protection flags
  */
-struct ivee_host_memory_region
+enum ivee_memory_prot
 {
-    /* Host virtual address */
-    void* hva;
-
-    /* Region length in bytes */
-    size_t length;
-
-    /* Reference count */
-    atomic_ulong refcount;
+    IVEE_READ   = (1u << 0),
+    IVEE_WRITE  = (1u << 1),
+    IVEE_EXEC   = (1u << 2),
 };
 
 /**
@@ -38,11 +32,14 @@ struct ivee_guest_memory_region
     gpa_t first_gfn;
     gpa_t last_gfn;
 
-    /* Guest can't write to this region */
-    bool ro;
+    /* Host virtual address of memory mapped at this guest region */
+    void* hva;
 
-    /* What do we have mapped here */
-    struct ivee_host_memory_region* host;
+    /* Region length in bytes */
+    size_t length;
+
+    /* Guest memory protection bits */
+    enum ivee_memory_prot prot;
 };
 
 /**
@@ -67,36 +64,33 @@ struct ivee_memory_map
 int ivee_init_memory_map(struct ivee_memory_map* map);
 
 /**
- * Map host memory to create a memory region.
- * 
- * Mapped region will have refcount set to 1 with initial reference belonging to the caller.
- * Each guest mapping of the region will add another refcount.
- * Caller can drop its reference with ivee_drop_memory_region.
- *
- * \length      Length of the region in bytes.
- * \ro          Map host memory as readonly.
- *              Only affect what our process context can do with the memory, not what guest can.
- * \mmap_fd     Optional argument to specify what fd to use for an mmap call.
- *              If -1 then anonymous memory mapping will be created.
- * \out_mr      Memory region to initialize on success
+ * Free all guest regions in this memory map
  */
-int ivee_map_host_memory(size_t length, bool ro, int mmap_fd, struct ivee_host_memory_region* out_mr);
+void ivee_free_memory_map(struct ivee_memory_map* map);
 
 /**
- * Drop owner reference to host memory region.
- * Once no guest mappings will exist for this region it will be complete released.
- */
-void ivee_drop_host_memory(struct ivee_host_memory_region* r);
-
-/**
- * Map host memory region into guest physical address space.
+ * Allocate a block of host memory and map it into the guest memory map at specified GPA.
  *
- * Single host region can be mapped any number of times to different guest regions.
- * No region overlaps are allowed in memory map.
- *
- * \memmap      Flat memory map to make changes to
- * \host        Host memory region to map
+ * \map         Flat memory map to make changes to
  * \gpa         GPA where region will start
- * \ro          If true, guest will not be able to write into this particular mapping of this host memory.
+ * \length      Length of the region in bytes, will be rounded up to guest page size
+ *              Only affect what our process context can do with the memory, not what guest can
+ * \mmap_fd     Optional argument to specify what fd to use for an mmap call
+ *              If -1 then anonymous memory mapping will be created.
+ * \host_ro     Host memory is mapped as PROT_READ instead of default PROT_READ|PROT_WRITE
+ *              This does not affect guest access permissions (see \prot argument for that)
+ * \prot        Guest access permissions
+ *
+ * Returns newly allocate guest memory region on success, stored in memory map.
  */
-int ivee_map_guest_region(struct ivee_memory_map* memmap, struct ivee_host_memory_region* host, gpa_t gpa, bool ro);
+struct ivee_guest_memory_region* ivee_map_host_memory(struct ivee_memory_map* map,
+                                                      gpa_t gpa,
+                                                      size_t length,
+                                                      int mmap_fd,
+                                                      bool host_ro,
+                                                      enum ivee_memory_prot prot);
+
+/**
+ * Unmap guest region and free associated host memory
+ */
+void ivee_unmap_host_memory(struct ivee_guest_memory_region* mr);

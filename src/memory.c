@@ -7,53 +7,72 @@
 #include "memory.h"
 #include "kvm.h"
 
-int ivee_map_host_memory(size_t length, bool ro, int mmap_fd, struct ivee_host_memory_region* out_mr)
+struct ivee_guest_memory_region* ivee_map_host_memory(struct ivee_memory_map* map,
+                                                      gpa_t gpa,
+                                                      size_t length,
+                                                      int mmap_fd,
+                                                      bool host_ro,
+                                                      enum ivee_memory_prot prot)
 {
-    if (length == 0 || !out_mr) {
-        return -EINVAL;
+    if (!map) {
+        return NULL;
+    }
+
+    if (!length) {
+        return NULL;
+    }
+
+    /* Check that region does not overflow the GPA space */
+    if (IVEE_GPA_LAST - gpa < length - 1) {
+        return NULL;
+    }
+
+    gpa_t first_gfn = gpa >> 12;
+    gpa_t last_gfn = (gpa + (length - 1)) >> 12;
+
+    /* Walk current regions and check for overlaps */
+    struct ivee_guest_memory_region* mr;
+    LIST_FOREACH(mr, &map->regions, link) {
+        if (first_gfn <= mr->last_gfn && last_gfn >= mr->first_gfn) {
+            return NULL;
+        }
     }
 
     void* ptr = mmap(NULL,
                      length,
-                     (ro ? PROT_READ : PROT_READ | PROT_WRITE),
+                     (host_ro ? PROT_READ : PROT_READ | PROT_WRITE),
                      MAP_SHARED | (mmap_fd == -1 ? MAP_ANONYMOUS : 0),
                      mmap_fd,
                      0);
     if (ptr == MAP_FAILED) {
-        return -errno;
+        return NULL;
     }
 
-    out_mr->hva = ptr;
-    out_mr->length = length;
-    atomic_init(&out_mr->refcount, 1);
-
-    return 0;
-}
-
-static void free_host_region(struct ivee_host_memory_region* r)
-{
-    munmap(r->hva, r->length);
-    r->hva = NULL;
-    r->length = 0;
-}
-
-static void take_host_region(struct ivee_host_memory_region* r)
-{
-    atomic_fetch_add(&r->refcount, 1);
-}
-
-static void drop_host_region(struct ivee_host_memory_region* r)
-{
-    if (atomic_fetch_sub(&r->refcount, 1) == 1) {
-        free_host_region(r);
+    mr = ivee_alloc(sizeof(*mr));
+    if (!mr) {
+        munmap(ptr, length);
+        return NULL;
     }
+
+    mr->first_gfn = first_gfn;
+    mr->last_gfn = last_gfn;
+    mr->prot = prot;
+    mr->hva = ptr;
+
+    LIST_INSERT_HEAD(&map->regions, mr, link);
+    return mr;
 }
 
-void ivee_drop_host_memory(struct ivee_host_memory_region* r)
+void ivee_unmap_host_memory(struct ivee_guest_memory_region* mr)
 {
-    if (r) {
-        drop_host_region(r);
+    if (!mr || !mr->hva) {
+        return;
     }
+
+    LIST_REMOVE(mr, link);
+
+    munmap(mr->hva, mr->length);
+    ivee_free(mr);
 }
 
 int ivee_init_memory_map(struct ivee_memory_map* map)
@@ -61,45 +80,16 @@ int ivee_init_memory_map(struct ivee_memory_map* map)
     LIST_INIT(&map->regions);
     return 0;
 }
- 
-int ivee_map_guest_region(struct ivee_memory_map* map, struct ivee_host_memory_region* host, gpa_t gpa, bool ro)
+
+void ivee_free_memory_map(struct ivee_memory_map* map)
 {
     if (!map) {
-        return -EINVAL;
+        return;
     }
 
-    if (!host || !host->length) {
-        return -EINVAL;
+    struct ivee_guest_memory_region* mr;
+    while (!LIST_EMPTY(&map->regions)) {
+        mr = LIST_FIRST(&map->regions);
+        ivee_unmap_host_memory(mr);
     }
-
-    /* Check that region does not overflow the GPA space */
-    if (IVEE_GPA_LAST - gpa < host->length - 1) {
-        return -EINVAL;
-    }
-
-    gpa_t first_gfn = gpa >> 12;
-    gpa_t last_gfn = (gpa + (host->length - 1)) >> 12;
-
-    /* Walk current regions and check for overlaps */
-    struct ivee_guest_memory_region* guest;
-    LIST_FOREACH(guest, &map->regions, link) {
-        if (first_gfn <= guest->last_gfn && last_gfn >= guest->first_gfn) {
-            return -EINVAL;
-        }
-    }
-
-    guest = ivee_alloc(sizeof(*guest));
-    if (!guest) {
-        return -ENOMEM;
-    }
-
-    guest->first_gfn = first_gfn;
-    guest->last_gfn = last_gfn;
-    guest->ro = ro;
-    guest->host = host;
-
-    LIST_INSERT_HEAD(&map->regions, guest, link);
-    take_host_region(host);
-
-    return 0;
 }
