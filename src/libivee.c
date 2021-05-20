@@ -137,6 +137,67 @@ static int init_guest_page_table(struct ivee* ivee)
     return res;
 }
 
+static void reset_x86_segment(struct x86_segment* seg,
+                              uint16_t selector,
+                              uint32_t limit,
+                              uint8_t type,
+                              uint8_t flags)
+{
+    seg->base = 0;
+    seg->limit = limit;
+    seg->selector = selector;
+    seg->type = type;
+    seg->dpl = 0;
+    seg->flags = flags;
+}
+
+/*
+ * Set initial state for x86 boot processor.
+ * We are putting the cpu directly in x86_64 long mode.
+ */
+static void init_x86_cpu(struct x86_cpu_state* x86_cpu)
+{
+    /*
+     * IDT and GDT limits are also set to 0 here,
+     * which means if exception occurs inside a guest, it will end in a triple fault.
+     *
+     * For now this is fine (insert meme here).
+     * Guest runtime can opt to set it's own exception handlers later on
+     */
+    memset(x86_cpu, 0, sizeof(*x86_cpu));
+
+    x86_cpu->rflags = 0x2; /* Bit 1 is always set */
+
+    /*
+     * Although segmentation is deprecated in 64-bit mode,
+     * vmentry checks still require us to setup flat 64-bit segment model.
+     */
+    reset_x86_segment(&x86_cpu->cs, 0x8, 0xFFFFFFFF, X86_SEG_TYPE_CODE | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_L);
+    reset_x86_segment(&x86_cpu->ds, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
+    reset_x86_segment(&x86_cpu->ss, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
+    reset_x86_segment(&x86_cpu->es, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
+    reset_x86_segment(&x86_cpu->fs, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
+    reset_x86_segment(&x86_cpu->gs, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
+            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
+    reset_x86_segment(&x86_cpu->tr, 0, 0, X86_SEG_TYPE_TSS32,
+            X86_SEG_P);
+    reset_x86_segment(&x86_cpu->ldt, 0, 0, X86_SEG_TYPE_LDT,
+            X86_SEG_P);
+
+    /*
+     * Setup the rest of 64-bit control register context
+     */
+    x86_cpu->cr0 = 0x80010001;  /* PG | PE | WP */
+    x86_cpu->cr4 = 0x20;        /* PAE */
+    x86_cpu->efer = 0x500;      /* LMA | LME */
+    x86_cpu->cr3 = IVEE_PML4_BASE_GPA;
+}
+
 /* Load flat binary into VM and create a page table for it */
 static int load_bin(struct ivee* ivee, const char* file)
 {
@@ -333,74 +394,13 @@ int ivee_load_executable(struct ivee* ivee, const char* file, ivee_executable_fo
         return res;
     }
 
+    init_x86_cpu(&ivee->x86_cpu);
     return res;
-}
-
-static void reset_x86_segment(struct x86_segment* seg,
-                              uint16_t selector,
-                              uint32_t limit,
-                              uint8_t type,
-                              uint8_t flags)
-{
-    seg->base = 0;
-    seg->limit = limit;
-    seg->selector = selector;
-    seg->type = type;
-    seg->dpl = 0;
-    seg->flags = flags;
-}
-
-/*
- * Set initial state for x86 boot processor.
- * We are putting the cpu directly in x86_64 long mode.
- */
-static void init_x86_cpu(struct x86_cpu_state* x86_cpu)
-{
-    /*
-     * IDT and GDT limits are also set to 0 here,
-     * which means if exception occurs inside a guest, it will end in a triple fault.
-     *
-     * For now this is fine (insert meme here).
-     * Guest runtime can opt to set it's own exception handlers later on
-     */
-    memset(x86_cpu, 0, sizeof(*x86_cpu));
-
-    x86_cpu->rflags = 0x2; /* Bit 1 is always set */
-
-    /*
-     * Although segmentation is deprecated in 64-bit mode,
-     * vmentry checks still require us to setup flat 64-bit segment model.
-     */
-    reset_x86_segment(&x86_cpu->cs, 0x8, 0xFFFFFFFF, X86_SEG_TYPE_CODE | X86_SEG_TYPE_ACC,
-            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_L);
-    reset_x86_segment(&x86_cpu->ds, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
-            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
-    reset_x86_segment(&x86_cpu->ss, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
-            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
-    reset_x86_segment(&x86_cpu->es, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
-            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
-    reset_x86_segment(&x86_cpu->fs, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
-            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
-    reset_x86_segment(&x86_cpu->gs, 0x10, 0xFFFFFFFF, X86_SEG_TYPE_DATA | X86_SEG_TYPE_ACC,
-            X86_SEG_S | X86_SEG_P | X86_SEG_G | X86_SEG_DB);
-    reset_x86_segment(&x86_cpu->tr, 0, 0, X86_SEG_TYPE_TSS32,
-            X86_SEG_P);
-    reset_x86_segment(&x86_cpu->ldt, 0, 0, X86_SEG_TYPE_LDT,
-            X86_SEG_P);
-
-    /*
-     * Setup the rest of 64-bit control register context
-     */
-    x86_cpu->cr0 = 0x80010001;  /* PG | PE | WP */
-    x86_cpu->cr4 = 0x20;        /* PAE */
-    x86_cpu->efer = 0x500;      /* LMA | LME */
-    x86_cpu->cr3 = IVEE_PML4_BASE_GPA;
 }
 
 static int load_vcpu_state(struct ivee* ivee, struct ivee_arch_state* state)
 {
     struct x86_cpu_state* x86_cpu = &ivee->x86_cpu;
-    init_x86_cpu(x86_cpu);
     x86_cpu->rax = state->rax;
     x86_cpu->rbx = state->rbx;
     x86_cpu->rcx = state->rcx;
