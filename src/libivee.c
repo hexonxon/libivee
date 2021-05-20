@@ -23,6 +23,9 @@ struct ivee {
     /* x86 boot processor state */
     struct x86_cpu_state x86_cpu;
 
+    /* Loaded executable entry point */
+    uint64_t entry_addr;
+
     /* Flag set to true if guest requested termination */
     bool should_terminate;
 };
@@ -235,6 +238,7 @@ static int load_bin(struct ivee* ivee, const char* file)
         return -ENOMEM;
     }
 
+    ivee->entry_addr = 0;
     return 0;
 }
 
@@ -324,6 +328,8 @@ int load_elf64(struct ivee* ivee, const char* file)
             goto error_out;
         }
     }
+
+    ivee->entry_addr = ehdr.e_entry;
 
     elf_end(elf);
     close(fd);
@@ -416,6 +422,7 @@ static int load_vcpu_state(struct ivee* ivee, struct ivee_arch_state* state)
     x86_cpu->r13 = state->r13;
     x86_cpu->r14 = state->r14;
     x86_cpu->r15 = state->r15;
+    x86_cpu->rip = ivee->entry_addr;
 
     return ivee_kvm_load_vcpu_state(ivee->vm, x86_cpu);
 }
