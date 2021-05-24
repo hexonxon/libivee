@@ -26,6 +26,9 @@ struct ivee {
     /* Loaded executable entry point */
     uint64_t entry_addr;
 
+    /* Region that maps guest page table pages */
+    struct ivee_guest_memory_region* gpt_mr;
+
     /* Flag set to true if guest requested termination */
     bool should_terminate;
 };
@@ -93,51 +96,69 @@ void ivee_destroy(struct ivee* ivee)
  *
  * Statically compute guest GPA for PML4 base address if we map it at the end of 4GiB address space.
  */
-#define IVEE_PAGE_TABLE_SIZE    (0x1000ull * 515)
-#define IVEE_PML4_BASE_GPA      (0x100000000ull - IVEE_PAGE_TABLE_SIZE)
-#define IVEE_PDPE_BASE_GPA      (IVEE_PML4_BASE_GPA + 0x1000)
-#define IVEE_PDE_BASE_GPA       (IVEE_PDPE_BASE_GPA + 0x1000)
-#define IVEE_PTE_BASE_GPA       (IVEE_PDE_BASE_GPA + 0x1000)
+#define IVEE_GUEST_MEMORY_SIZE  (0x40000000ull)
+#define IVEE_GUEST_PAGES_COUNT  (IVEE_GUEST_MEMORY_SIZE >> X86_PAGE_SHIFT)
+#define IVEE_PAGE_TABLE_SIZE    (X86_PAGE_SIZE * 515)
+#define IVEE_PML4_BASE_GPA      (IVEE_GUEST_MEMORY_SIZE - IVEE_PAGE_TABLE_SIZE)
+#define IVEE_PDPE_BASE_GPA      (IVEE_PML4_BASE_GPA + X86_PAGE_SIZE)
+#define IVEE_PDE_BASE_GPA       (IVEE_PDPE_BASE_GPA + X86_PAGE_SIZE)
+#define IVEE_PTE_BASE_GPA       (IVEE_PDE_BASE_GPA + X86_PAGE_SIZE)
 
 /*
- * Setup guest identity-mapped 4KB page tables mapping first 1GiB of memory.
- * We will map it into guest memory directly.
+ * Setup guest identity-mapped 4KB page tables based on current guest memory map.
+ * Memory map should be finalized at this point.
+ *
+ * We will allocate and map host memory enough to hold full 1GiB guest identity mapping,
+ * however only currently mapped physical memory will be mapped in those page tables.
+ * The rest is reserved for guest to make it's own mappings when needed.
  */
 static int init_guest_page_table(struct ivee* ivee)
 {
-    int res = 0;
-
-    struct ivee_guest_memory_region* gpt_mr = ivee_map_host_memory(&ivee->memory_map,
-                                                                   IVEE_PML4_BASE_GPA,
-                                                                   IVEE_PAGE_TABLE_SIZE,
-                                                                   -1,
-                                                                   false,
-                                                                   IVEE_READ | IVEE_WRITE);
-    if (!gpt_mr) {
+    /* Allocate and map entire page table space.
+     * This has an additional benefit of mapping page table pages region first,
+     * which we will reflect in page tables later. */
+    ivee->gpt_mr = ivee_map_host_memory(&ivee->memory_map,
+                                        IVEE_PML4_BASE_GPA,
+                                        IVEE_PAGE_TABLE_SIZE,
+                                        -1,
+                                        false,
+                                        IVEE_READ | IVEE_WRITE);
+    if (!ivee->gpt_mr) {
         return -ENOMEM;
     }
 
-    uint64_t* pentry = (uint64_t*) gpt_mr->hva;
+    uint64_t* pentry = (uint64_t*) ivee->gpt_mr->hva;
 
-    /* 1 entry in PML4 */
-    *pentry = IVEE_PDPE_BASE_GPA | 0x3;
-    pentry += PAGE_SIZE / sizeof(*pentry);
+    /* 1 entry in PML4 always present */
+    *pentry = IVEE_PDPE_BASE_GPA | X86_PTE_PRESENT;
+    pentry += X86_PAGE_SIZE / sizeof(*pentry);
 
-    /* 1 entry in PDPE */
-    *pentry = IVEE_PDE_BASE_GPA | 0x1;
-    pentry += PAGE_SIZE / sizeof(*pentry);
+    /* 1 entry in PDPE always present */
+    *pentry = IVEE_PDE_BASE_GPA | X86_PTE_PRESENT;
+    pentry += X86_PAGE_SIZE / sizeof(*pentry);
 
-    /* 512 entries in PDE */
-    for (size_t i = 0; i < 512; ++i, ++pentry) {
-        *pentry = (IVEE_PTE_BASE_GPA + PAGE_SIZE * i) | 0x3;
+    /* 4KiB worth of PDE mappings always present */
+    for (size_t i = 0; i < X86_PTES_PER_PAGE; ++i, ++pentry) {
+        *pentry = (IVEE_PTE_BASE_GPA + X86_PAGE_SIZE * i) | X86_PTE_PRESENT | X86_PTE_RW;
     }
 
-    /* 256KiB entries in PTEs */
-    for (size_t i = 0; i < (1 << 18); ++i, ++pentry) {
-        *pentry = (PAGE_SIZE * i) | 0x3;
+    /* Mark all PTEs as non-present first */
+    uint64_t* pte_pages_base = pentry;
+    memset(pte_pages_base, 0, IVEE_GUEST_PAGES_COUNT * sizeof(*pentry));
+
+    /* Go over guest regions and map present PTE entries */
+    struct ivee_guest_memory_region* mr;
+    LIST_FOREACH(mr, &ivee->memory_map.regions, link) {
+        for (uint64_t gfn = mr->first_gfn; gfn <= mr->last_gfn; ++gfn) {
+            uint64_t* ppte = &pte_pages_base[((gfn >> 9) & 0x1FF) * X86_PTES_PER_PAGE];
+            ppte[gfn & 0x1FF] = (gfn << X86_PAGE_SHIFT) |
+                (mr->prot & IVEE_WRITE ? X86_PTE_RW : 0) |
+                (mr->prot & IVEE_EXEC ?  0 : X86_PTE_NX) |
+                X86_PTE_PRESENT;
+        }
     }
 
-    return res;
+    return 0;
 }
 
 static void reset_x86_segment(struct x86_segment* seg,

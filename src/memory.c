@@ -6,6 +6,7 @@
 #include "platform.h"
 #include "memory.h"
 #include "kvm.h"
+#include "x86.h"
 
 struct ivee_guest_memory_region* ivee_map_host_memory(struct ivee_memory_map* map,
                                                       gpa_t gpa,
@@ -28,10 +29,10 @@ struct ivee_guest_memory_region* ivee_map_host_memory(struct ivee_memory_map* ma
     }
 
     /* Fixup length to be page-aligned */
-    length = (length + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
+    length = (length + (X86_PAGE_SIZE - 1)) & ~(X86_PAGE_SIZE - 1);
 
-    gpa_t first_gfn = gpa >> PAGE_SHIFT;
-    gpa_t last_gfn = (gpa + (length - 1)) >> PAGE_SHIFT;
+    gpa_t first_gfn = gpa >> X86_PAGE_SHIFT;
+    gpa_t last_gfn = (gpa + (length - 1)) >> X86_PAGE_SHIFT;
 
     /* Walk current regions and check for overlaps */
     struct ivee_guest_memory_region* mr;

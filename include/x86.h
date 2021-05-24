@@ -1,5 +1,13 @@
 #pragma once
 
+#define X86_PAGE_SHIFT      12
+#define X86_PAGE_SIZE       (1ul << X86_PAGE_SHIFT)
+#define X86_PTES_PER_PAGE   (X86_PAGE_SIZE / sizeof(uint64_t))
+
+#define X86_PTE_PRESENT     (1ul << 0)
+#define X86_PTE_RW          (1ul << 1)
+#define X86_PTE_NX          (1ul << 63)
+
 /**
  * x86 segment descriptor
  * This definition is not exactly how actual descriptor is laid out.
