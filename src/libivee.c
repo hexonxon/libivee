@@ -227,18 +227,18 @@ static int load_bin(struct ivee* ivee, const char* file)
         return fd;
     }
 
+    ivee->entry_addr = 0x400000;
     struct ivee_guest_memory_region* image_mr = ivee_map_host_memory(&ivee->memory_map,
-                                                                     0,
+                                                                     ivee->entry_addr,
                                                                      size,
                                                                      fd,
                                                                      true,
-                                                                     IVEE_READ);
+                                                                     IVEE_READ | IVEE_EXEC);
     close(fd);
     if (!image_mr) {
         return -ENOMEM;
     }
 
-    ivee->entry_addr = 0;
     return 0;
 }
 
